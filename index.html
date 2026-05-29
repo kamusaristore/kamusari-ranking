@@ -189,7 +189,7 @@
   <div class="table-frame">
     <table>
       <thead><tr>
-        <th class="num">#</th><th>Pirata</th><th class="num">Recompensa</th><th class="num">Vitórias</th><th>Título</th>
+        <th class="num">#</th><th>Pirata</th><th class="num">Recompensa</th><th>Título</th>
       </tr></thead>
       <tbody id="rankBody"></tbody>
     </table>
@@ -433,7 +433,7 @@ function renderRanking(){
   document.getElementById('seasonTitle').innerHTML = m
     ? `${esc(m[1].trim())} <span class="red">${esc(m[2].trim())}</span>`
     : esc(currentTour||"");
-  if(!data){document.getElementById('rankBody').innerHTML=`<tr><td colspan="5" class="empty">Torneio sem dados.</td></tr>`;return;}
+  if(!data){document.getElementById('rankBody').innerHTML=`<tr><td colspan="4" class="empty">Torneio sem dados.</td></tr>`;return;}
   let tb="";
   data.players.forEach((p,i)=>{
     let badge="";
@@ -443,7 +443,7 @@ function renderRanking(){
     tb+=`<tr><td class="rk">${i+1}</td>
       <td class="pname" data-player="${esc(p.name)}">${esc(p.name)}</td>
       <td class="pb"><span class="sym">฿</span>${fmtBounty(p.bounty)}</td>
-      <td class="pw">${fmtWins(p.wins)}</td><td class="ptitle">${badge}</td></tr>`;
+      <td class="ptitle">${badge}</td></tr>`;
   });
   document.getElementById('rankBody').innerHTML=tb;
   bindNames();
