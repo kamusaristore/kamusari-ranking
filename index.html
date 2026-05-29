@@ -284,18 +284,50 @@ CARLO,"฿1,000,000.00",,1,,,,,,,,,,,,,1
 iblackman,"฿1,000,000.00",,1,,,,,,,,,,,,,,1`;
 
 /* ===== Helpers ===== */
-function parseBounty(s){
-  if(!s&&s!==0)return 0;
-  if(typeof s==='number')return Math.round(s);
-  const raw=String(s).trim();
-  const hasCurrency=/[฿$R]/i.test(raw);
-  const hasDecimal=/[.,]\d{1,2}\s*$/.test(raw);
-  let n=raw.replace(/[^0-9]/g,"");
-  if(!n)return 0;
-  if(hasCurrency && hasDecimal && n.length>2)n=n.slice(0,-2);
-  return parseInt(n||"0",10);
+function normalizeText(s){
+  return String(s||"").normalize('NFD').replace(/[\u0300-\u036f]/g,'').trim().toLowerCase();
 }
-function fmtBounty(v){return v.toLocaleString('pt-BR')+",00";}
+function parseNumberFlexible(s){
+  if(s===null||s===undefined||s==="")return 0;
+  if(typeof s==='number')return s;
+  let raw=String(s).trim();
+  if(!raw)return 0;
+  raw=raw.replace(/[^0-9,.-]/g,"");
+  if(!raw)return 0;
+  const hasComma=raw.includes(',');
+  const hasDot=raw.includes('.');
+  if(hasComma&&hasDot){
+    // Decide pelo último separador: pt-BR 1.234,56 ou en-US 1,234.56
+    if(raw.lastIndexOf(',')>raw.lastIndexOf('.')) raw=raw.replace(/\./g,'').replace(',', '.');
+    else raw=raw.replace(/,/g,'');
+  }else if(hasComma){
+    raw=raw.replace(',', '.');
+  }
+  const n=parseFloat(raw);
+  return Number.isFinite(n)?n:0;
+}
+function parseBounty(s){
+  if(s===null||s===undefined||s==="")return 0;
+  if(typeof s==='number'){
+    // Se vier como 27 ou 24.2, interpreta como milhões.
+    if(s>0 && s<1000000)return Math.round(s*1000000);
+    return Math.round(s);
+  }
+  const raw=String(s).trim();
+  if(!raw)return 0;
+  const hasCurrency=/[฿$R]/i.test(raw);
+  const n=parseNumberFlexible(raw);
+  if(!Number.isFinite(n)||n<=0)return 0;
+  if(hasCurrency)return Math.round(n);
+  // A planilha às vezes entrega 27 / 24.2 em vez de 27.000.000 / 24.200.000.
+  if(n<1000000)return Math.round(n*1000000);
+  return Math.round(n);
+}
+function fmtBounty(v){return Number(v||0).toLocaleString('pt-BR')+",00";}
+function fmtWins(v){
+  const n=parseNumberFlexible(v);
+  return Number.isInteger(n)?String(n):n.toLocaleString('pt-BR',{maximumFractionDigits:1});
+}
 function esc(s){return String(s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
 function parseCSV(text){
   const rows=[];let row=[],cur="",q=false;
@@ -307,26 +339,59 @@ function parseCSV(text){
   if(cur!==""||row.length){row.push(cur);rows.push(row);}
   return rows;
 }
+function valueFromCell(c){
+  if(c===null||c===undefined)return "";
+  if(typeof c==='object'){
+    // Para moeda e datas, o formato exibido costuma ser o melhor.
+    if(c.f!==undefined&&c.f!==null&&String(c.f).trim()!=="")return c.f;
+    if(c.v!==undefined&&c.v!==null)return c.v;
+    return "";
+  }
+  return c;
+}
+function rowsFromGvizTable(table){
+  const headers=(table.cols||[]).map(c=>String(c.label||c.id||"").trim());
+  const rows=[headers];
+  (table.rows||[]).forEach(r=>rows.push((r.c||[]).map(valueFromCell)));
+  return rows;
+}
+function isDateHeader(h){return /^\s*\d{1,2}\/\d{1,2}/.test(String(h||""));}
 function buildSheet(rows){
-  let head=rows.findIndex(r=>r.some(c=>/jogador/i.test(String(c))));
+  rows=(rows||[]).filter(r=>r&&r.some(c=>String(valueFromCell(c)).trim()!==""));
+  let head=rows.findIndex(r=>r.some(c=>normalizeText(valueFromCell(c)).includes('jogador')||normalizeText(valueFromCell(c)).includes('pirata')));
   if(head<0)head=0;
-  const H=rows[head].map(c=>String(c).trim());
-  const HL=H.map(c=>c.toLowerCase());
-  const iName=HL.findIndex(c=>c.includes('jogador'));
-  const iBounty=HL.findIndex(c=>c.includes('recompensa'));
-  const iTitle=HL.findIndex(c=>c.includes('título')||c.includes('titulo'));
-  const iWins=HL.findIndex(c=>c.includes('vitória')||c.includes('vitoria'));
+  const H=(rows[head]||[]).map(c=>String(valueFromCell(c)).trim());
+  const HL=H.map(normalizeText);
+  let iName=HL.findIndex(c=>c.includes('jogador')||c.includes('pirata'));
+  let iBounty=HL.findIndex(c=>c.includes('recompensa')||c.includes('bounty'));
+  let iTitle=HL.findIndex(c=>c.includes('titulo')||c.includes('title'));
+  let iWins=HL.findIndex(c=>c.includes('vitoria')||c.includes('wins')||c.includes('total'));
+  // Fallback pela ordem padrão da sua planilha: Jogador, Recompensa, Título, Vitórias.
+  if(iName<0)iName=0;
+  if(iBounty<0)iBounty=1;
+  if(iTitle<0)iTitle=2;
+  if(iWins<0)iWins=3;
   const dateCols=[];
-  H.forEach((h,idx)=>{ if(/^\s*\d{1,2}\/\d{1,2}/.test(h)) dateCols.push({idx,label:h.trim()}); });
+  H.forEach((h,idx)=>{ if(isDateHeader(h)) dateCols.push({idx,label:h.trim()}); });
   const players=[];
   for(let r=head+1;r<rows.length;r++){
-    const row=rows[r]||[]; const name=String(row[iName]||"").trim();
-    if(!name)continue;
-    const history=dateCols.map(d=>{const v=String(row[d.idx]||"").trim();return{label:d.label,wins:v===""?null:parseInt(v.replace(/[^0-9]/g,"")||"0",10)};});
-    players.push({name,bounty:parseBounty(row[iBounty]),title:String(iTitle>=0?(row[iTitle]||""):"").trim(),
-      wins:parseInt(String(row[iWins]||"").replace(/[^0-9]/g,"")||"0",10),history,dateCols});
+    const row=rows[r]||[]; const get=i=>valueFromCell(row[i]);
+    const name=String(get(iName)||"").trim();
+    if(!name || /^฿?0([,.]00)?$/.test(name))continue;
+    const history=dateCols.map(d=>{
+      const v=String(get(d.idx)||"").trim();
+      return{label:d.label,wins:v===""?null:parseNumberFlexible(v)};
+    });
+    players.push({
+      name,
+      bounty:parseBounty(get(iBounty)),
+      title:String(iTitle>=0?(get(iTitle)||""):"").trim(),
+      wins:parseNumberFlexible(get(iWins)),
+      history,
+      dateCols
+    });
   }
-  players.sort((a,b)=>b.bounty-a.bounty);
+  players.sort((a,b)=>b.bounty-a.bounty || b.wins-a.wins || a.name.localeCompare(b.name,'pt-BR'));
   return {players,dateCols};
 }
 function sheetFromCSV(t){return buildSheet(parseCSV(t));}
@@ -343,7 +408,7 @@ function renderPodium(data){
     <div class="crown">👑</div><div class="king-rank">Rei dos Piratas</div>
     <div class="king-name">${esc(king.name)}</div>
     <div class="bounty"><span class="sym">฿</span>${fmtBounty(king.bounty)}</div>
-    <div class="wins-pill">${king.wins} vitórias</div></div>`;}
+    <div class="wins-pill">${fmtWins(king.wins)} vitórias</div></div>`;}
   if(yonkou.length){pod+=`<div class="tier"><div class="tier-label yonkou"><span>Os Quatro Imperadores · Yonkou</span></div><div class="cards">`;
     yonkou.forEach((p,i)=>pod+=tierCard(p,i+2,'yonkou'));pod+=`</div></div>`;}
   if(shichi.length){pod+=`<div class="tier"><div class="tier-label shichi"><span>Os Corsários · Shichibukai</span></div><div class="cards">`;
@@ -354,7 +419,7 @@ function renderPodium(data){
 function tierCard(p,pos,cls){return `<div class="tcard ${cls}" data-player="${esc(p.name)}">
   <div class="pos">#${pos}</div><div class="tname">${esc(p.name)}</div>
   <div class="tb"><span class="sym">฿</span>${fmtBounty(p.bounty)}</div>
-  <div class="tw">${p.wins} vitórias</div></div>`;}
+  <div class="tw">${fmtWins(p.wins)} vitórias</div></div>`;}
 
 function renderTabs(){
   let html="";
@@ -378,7 +443,7 @@ function renderRanking(){
     tb+=`<tr><td class="rk">${i+1}</td>
       <td class="pname" data-player="${esc(p.name)}">${esc(p.name)}</td>
       <td class="pb"><span class="sym">฿</span>${fmtBounty(p.bounty)}</td>
-      <td class="pw">${p.wins}</td><td class="ptitle">${badge}</td></tr>`;
+      <td class="pw">${fmtWins(p.wins)}</td><td class="ptitle">${badge}</td></tr>`;
   });
   document.getElementById('rankBody').innerHTML=tb;
   bindNames();
@@ -414,7 +479,7 @@ function openProfile(name){
     <div class="m-name">${esc(p.name)}</div>
     <div class="m-stats">
       <div class="m-stat"><div class="lbl">Recompensa</div><div class="val">฿${fmtBounty(p.bounty)}</div></div>
-      <div class="m-stat"><div class="lbl">Vitórias totais</div><div class="val">${p.wins}</div></div>
+      <div class="m-stat"><div class="lbl">Vitórias totais</div><div class="val">${fmtWins(p.wins)}</div></div>
       <div class="m-stat"><div class="lbl">Título</div><div class="val" style="font-size:.92rem">${titleBadge}</div></div>
     </div>`;
   if(winSeries.length>=2 || rankSeries.length>=2){
@@ -490,14 +555,28 @@ async function apiGetTab(title){
   const j=await r.json(); return buildSheet(j.values||[]);
 }
 
-/* Modo principal: lê a planilha pública por CSV, sem API key. */
+/* Modo principal: lê a planilha pública via Google Visualization, sem API key.
+   JSON primeiro porque preserva melhor números/moedas; CSV fica como plano B. */
 async function publicGetTab(title){
-  const url=`https://docs.google.com/spreadsheets/d/${CONFIG.SHEET_ID}/gviz/tq?tqx=out:csv&sheet=${encodeURIComponent(title)}&cachebust=${Date.now()}`;
-  const r=await fetch(url);
-  if(!r.ok)throw new Error(`${title} ${r.status}`);
-  const csv=await r.text();
-  if(/<!doctype html|<html/i.test(csv))throw new Error(`${title} retornou HTML em vez de CSV`);
-  return sheetFromCSV(csv);
+  const base=`https://docs.google.com/spreadsheets/d/${CONFIG.SHEET_ID}/gviz/tq?sheet=${encodeURIComponent(title)}&cachebust=${Date.now()}`;
+  try{
+    const r=await fetch(`${base}&tqx=out:json`);
+    if(!r.ok)throw new Error(`${title} json ${r.status}`);
+    const txt=await r.text();
+    if(/<!doctype html|<html/i.test(txt))throw new Error(`${title} retornou HTML em vez de JSON`);
+    const match=txt.match(/setResponse\((.*)\);?\s*$/s);
+    if(!match)throw new Error(`${title} JSON inesperado`);
+    const json=JSON.parse(match[1]);
+    if(json.status==='error')throw new Error(`${title} ${json.errors?.[0]?.detailed_message||'erro no Google Sheets'}`);
+    return buildSheet(rowsFromGvizTable(json.table||{}));
+  }catch(jsonErr){
+    console.warn('JSON falhou, tentando CSV:', title, jsonErr);
+    const r=await fetch(`${base}&tqx=out:csv`);
+    if(!r.ok)throw new Error(`${title} csv ${r.status}`);
+    const csv=await r.text();
+    if(/<!doctype html|<html/i.test(csv))throw new Error(`${title} retornou HTML em vez de CSV`);
+    return sheetFromCSV(csv);
+  }
 }
 
 async function loadWithApiKey(st){
